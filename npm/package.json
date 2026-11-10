@@ -1,0 +1,6 @@
+{
+  "name": "listo-cli-npm-workspace",
+  "private": true,
+  "description": "Not published. It makes every .js file under cli/npm CommonJS, which a parent package.json that says type module would otherwise change.",
+  "type": "commonjs"
+}

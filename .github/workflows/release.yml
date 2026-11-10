@@ -1,0 +1,209 @@
+# RELEASES THE listo COMMAND-LINE TOOL. This file is OUTPUT: it is written here by
+# the sync in Listo's own repository, whose copy of this file is its source, and a
+# change to it is released as a new version like any other. In that repository it
+# is inert (GitHub only runs a workflow from the root .github).
+#
+# WHEN IT RUNS: when the sync pushes a tag `v<version>`, and by hand to retry:
+#   gh workflow run release.yml --repo listo-delivery/listo-cli --ref v<version>
+# It refuses anything that is not a tag, and a tag that is not `v` plus the version
+# in npm/wrapper/package.json (and in the five platform manifests and the Go
+# constant), so a published version always names the tag it was built from.
+#
+# WHAT IT DOES, in order:
+#   1. GoReleaser builds the five platform binaries, the archives, checksums.txt,
+#      a signature over it made with OpenSSL, the GitHub Release and the Homebrew
+#      formula in listo-delivery/homebrew-tap (.goreleaser.yaml).
+#   2. The archives are unpacked into the five platform npm packages.
+#   3. Those five are published, then the wrapper `listo-cli`, each with
+#      `npm publish --provenance --access public`, skipping a version npm already
+#      holds, so a re-run after a partial failure is safe.
+#
+# SECRETS (the `release` environment of this repository, nothing at repository level):
+#   CLI_SIGNING_KEY     the PRIVATE half of the release signing key (ECDSA P-256,
+#                       PEM). Its public half is typed in install.sh and embedded
+#                       in the binary (internal/update). Written to a 0600 file
+#                       under RUNNER_TEMP for GoReleaser, and removed afterwards.
+#   HOMEBREW_TAP_TOKEN  a fine-grained token with contents write on the tap
+#                       repository ONLY.
+# The GitHub Release uses the job's own GITHUB_TOKEN.
+#
+# ONE WAY TO AUTHENTICATE TO npm: trusted publishing (OIDC), with no token, no
+# .npmrc and no secret for npm anywhere in this file. Each of the six packages
+# needs the trusted publisher configured on npmjs.com (owner listo-delivery,
+# repository listo-cli, workflow release.yml, environment release), and npm 11.5.1
+# or newer on Node 22.14 or newer.
+#
+# PROVENANCE IS ON: this repository is public and every package.json names it in
+# `repository`, which npm checks against the build's identity.
+#
+# `ubuntu-latest`: this repository is public, so GitHub-hosted runners are free, and
+# npm trusted publishing refuses self-hosted runners. Every action is pinned by full
+# commit SHA, the release tag in the comment, and GoReleaser itself by exact version.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# A second tag waits for the first run; a release is never cancelled half way.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Require an npm that can publish through trusted publishing
+        run: |
+          echo "node $(node --version), npm $(npm --version)"
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            if (a < 11 || (a === 11 && (b < 5 || (b === 5 && c < 1)))) {
+              console.error("npm " + process.argv[1] + " is older than 11.5.1, the first release that can publish through trusted publishing");
+              process.exit(1);
+            }
+          ' "$(npm --version)"
+
+      - name: Check the tag against every place the version is written
+        id: version
+        run: |
+          version="$(node -p 'require("./npm/wrapper/package.json").version')"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Run this from a tag, not from $GITHUB_REF. Retry with: gh workflow run release.yml --repo listo-delivery/listo-cli --ref v$version"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME but npm/wrapper/package.json says version $version, so the tag must be v$version."
+            exit 1
+          fi
+          node -e '
+            const fs = require("fs");
+            const want = process.argv[1];
+            const files = ["wrapper", "platforms/darwin-arm64", "platforms/darwin-x64", "platforms/linux-arm64", "platforms/linux-x64", "platforms/win32-x64"];
+            let bad = 0;
+            for (const f of files) {
+              const v = JSON.parse(fs.readFileSync("npm/" + f + "/package.json", "utf8")).version;
+              if (v !== want) { console.error("npm/" + f + "/package.json is " + v + ", expected " + want); bad++; }
+            }
+            const go = fs.readFileSync("internal/version/version.go", "utf8").match(/const Default = "([^"]*)"/);
+            if (!go || go[1] !== want) { console.error("internal/version/version.go says " + (go && go[1]) + ", expected " + want); bad++; }
+            process.exit(bad ? 1 : 0);
+          ' "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Write the release signing key
+        env:
+          CLI_SIGNING_KEY: ${{ secrets.CLI_SIGNING_KEY }}
+        run: |
+          if [ -z "$CLI_SIGNING_KEY" ]; then
+            echo "::error::The secret CLI_SIGNING_KEY of the release environment is empty or missing, so the release cannot be signed."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$CLI_SIGNING_KEY" > "$RUNNER_TEMP/listo-signing-key.pem"
+          # Reads it back as a private key, so a truncated secret fails here with openssl's message.
+          openssl pkey -in "$RUNNER_TEMP/listo-signing-key.pem" -noout
+          echo "LISTO_SIGNING_KEY_FILE=$RUNNER_TEMP/listo-signing-key.pem" >> "$GITHUB_ENV"
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Remove the release signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/listo-signing-key.pem"
+
+      - name: Put each binary in its platform package
+        run: |
+          stage() {
+            local key="$1" archive="$2" exe="$3"
+            local dir="npm/platforms/$key"
+            mkdir -p "$dir/bin" "$RUNNER_TEMP/unpack-$key"
+            case "$archive" in
+              *.zip) unzip -q -o "dist/$archive" -d "$RUNNER_TEMP/unpack-$key" ;;
+              *) tar -xzf "dist/$archive" -C "$RUNNER_TEMP/unpack-$key" ;;
+            esac
+            cp "$RUNNER_TEMP/unpack-$key/$exe" "$dir/bin/$exe"
+            chmod 755 "$dir/bin/$exe"
+            cp LICENSE README.md "$dir/"
+          }
+          stage darwin-arm64 listo_darwin_arm64.tar.gz listo
+          stage darwin-x64 listo_darwin_amd64.tar.gz listo
+          stage linux-arm64 listo_linux_arm64.tar.gz listo
+          stage linux-x64 listo_linux_amd64.tar.gz listo
+          stage win32-x64 listo_windows_amd64.zip listo.exe
+          cp LICENSE README.md npm/wrapper/
+
+      # One step, six publishes, platform packages first: the wrapper's
+      # optionalDependencies are pinned to this exact version, so npm must hold
+      # all five before the wrapper can install. No token is read or written
+      # anywhere: npm exchanges the job's OIDC identity for a short-lived publish
+      # credential, per package.
+      - name: Publish to npm through trusted publishing
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          publish() {
+            local dir="$1"
+            local name
+            name="$(cd "$dir" && node -p 'require("./package.json").name')"
+            local status
+            status="$(curl --silent --show-error --max-time 60 --retry 3 --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/$name/$VERSION")" || status=000
+            case "$status" in
+              200)
+                echo "$name $VERSION is already on npm: skipping."
+                return 0
+                ;;
+              404) ;;
+              *)
+                echo "::error::npm answered HTTP $status for $name $VERSION, so whether it is published is unknown. Not publishing."
+                return 1
+                ;;
+            esac
+            (cd "$dir" && npm publish --provenance --access public)
+          }
+          for key in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+            publish "npm/platforms/$key"
+          done
+          publish npm/wrapper

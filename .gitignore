@@ -1,0 +1,5 @@
+/dist/
+/npm/vendor/
+/npm/wrapper/vendor/
+/npm/platforms/*/bin/
+node_modules/

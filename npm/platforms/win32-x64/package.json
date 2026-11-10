@@ -1,0 +1,28 @@
+{
+  "name": "listo-cli-win32-x64",
+  "version": "0.1.0",
+  "description": "The listo command-line tool for win32 on x64. Install listo-cli instead of this package.",
+  "homepage": "https://docs.listo.delivery/en/guides/cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/listo-delivery/listo-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/listo-delivery/listo-cli/issues"
+  },
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "listo": {
+    "binary": "bin/listo.exe"
+  }
+}

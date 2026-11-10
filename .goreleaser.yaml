@@ -1,0 +1,133 @@
+# GoReleaser configuration for the listo command-line tool.
+#
+# Run by .github/workflows/release.yml on a v* tag, with the GoReleaser version
+# pinned there. What one run produces:
+#
+#   * a binary per platform (darwin and linux on amd64 and arm64, windows on
+#     amd64) with the version set from the tag by an -ldflags -X;
+#   * one archive per platform, listo_<os>_<arch>.tar.gz (zip on Windows). The
+#     install script, "listo update" and the npm postinstall all build that name,
+#     so it does not change without changing them;
+#   * checksums.txt, and checksums.txt.sig: an OpenSSL ECDSA signature over it,
+#     made with the release signing key, which install.sh and "listo update"
+#     verify before they trust a checksum;
+#   * the GitHub Release holding all of those;
+#   * the Homebrew formula "listo" pushed to listo-delivery/homebrew-tap.
+#
+# THE ENVIRONMENT IT NEEDS (all named here, none has a default, and GoReleaser
+# stops when one is missing):
+#
+#   GITHUB_TOKEN            the workflow's own token, to create the release
+#   HOMEBREW_TAP_TOKEN      a token scoped to the tap repository only
+#   LISTO_SIGNING_KEY_FILE  the path of the signing private key (PEM), written by
+#                           the workflow from the CLI_SIGNING_KEY secret
+#
+# The npm packages are NOT built here: the workflow unpacks these archives into
+# the five platform packages (npm/platforms) and publishes them afterwards.
+#
+# The "brews" section is GoReleaser's formula publisher, which its docs mark
+# deprecated in favour of "homebrew_casks". A cask cannot be installed on Linux,
+# and this CLI ships for Linux, so the formula stays until that changes.
+
+version: 2
+
+project_name: listo
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: listo
+    main: ./cmd/listo
+    binary: listo
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/listo-delivery/listo-cli/internal/version.Version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: listo
+    ids:
+      - listo
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - id: checksums
+    artifacts: checksum
+    cmd: openssl
+    signature: "${artifact}.sig"
+    args:
+      - dgst
+      - -sha256
+      - -sign
+      - "{{ .Env.LISTO_SIGNING_KEY_FILE }}"
+      - -out
+      - "${signature}"
+      - "${artifact}"
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: listo-delivery
+    name: listo-cli
+  draft: false
+  prerelease: auto
+  # A re-run of the workflow after a partial failure replaces the assets of the
+  # release it already made (checksums.txt and its signature together) rather
+  # than stopping on "already exists".
+  mode: keep-existing
+  replace_existing_artifacts: true
+
+brews:
+  - name: listo
+    ids:
+      - listo
+    repository:
+      owner: listo-delivery
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://docs.listo.delivery/en/guides/cli"
+    description: "Command-line tool for the Listo Delivery API"
+    license: MIT
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "listo {{ .Tag }}"
+    install: |
+      bin.install "listo"
+      (bash_completion/"listo").write Utils.safe_popen_read(bin/"listo", "completion", "bash")
+      (zsh_completion/"_listo").write Utils.safe_popen_read(bin/"listo", "completion", "zsh")
+      (fish_completion/"listo.fish").write Utils.safe_popen_read(bin/"listo", "completion", "fish")
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/listo version")
