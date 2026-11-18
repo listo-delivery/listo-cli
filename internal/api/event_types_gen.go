@@ -13,6 +13,8 @@ var EventTypes = []string{
 	"store.connected",
 	"delivery.message_skipped",
 	"delivery.rated",
+	"delivery.created",
+	"order.status_changed",
 }
 
 // SimulateScenarios are the courier scenarios a test key may ask for with

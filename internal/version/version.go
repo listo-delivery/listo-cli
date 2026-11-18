@@ -11,7 +11,7 @@ import "runtime"
 
 // Default is the version a build without -ldflags reports. Written by the
 // maintainers' version script; do not edit it by hand.
-const Default = "0.1.0"
+const Default = "0.2.0"
 
 // Version is the running binary's version. A var, not a const, because -X can
 // only set a string variable.

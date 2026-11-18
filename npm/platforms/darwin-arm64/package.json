@@ -1,6 +1,6 @@
 {
   "name": "listo-cli-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The listo command-line tool for darwin on arm64. Install listo-cli instead of this package.",
   "homepage": "https://docs.listo.delivery/en/guides/cli",
   "repository": {
